@@ -25,8 +25,8 @@ export default function Home() {
       className={`${geistSans.className} ${geistMono.className} grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]`}
     >
       <RoutingMap
-        start={[4.676979, -74.062062]} 
-        end={[4.609288, -74.09927]} 
+        start={[4.711296, -74.072017]} 
+        end={[10.96403, -74.796524]} 
         vehicleLocation={[4.651721, -74.078671]} 
         isRouting={true}
       />
