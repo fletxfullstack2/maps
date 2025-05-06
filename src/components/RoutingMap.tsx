@@ -1,5 +1,4 @@
 'use client';
-
 import { useEffect, useState } from 'react';
 import polyline from 'polyline';
 import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from 'react-leaflet';
@@ -31,9 +30,7 @@ interface MapInfo {
 interface OsrmRoute {
   geometry: string;
   legs: {
-    steps: {
-      geometry: string;
-    }[];
+    steps: { geometry: string }[];
   }[];
   distance: number;
   duration: number;
@@ -68,9 +65,9 @@ const redIcon = new L.Icon({
 });
 
 const carIcon = new L.Icon({
-  iconUrl: 'https://cdn-icons-png.flaticon.com/512/744/744515.png',
-  iconSize: [32, 32],
-  iconAnchor: [16, 16],
+  iconUrl: 'https://awsfletxwhatsappfiles.s3.us-east-1.amazonaws.com/Camion+Terpel.png',
+  iconSize: [40, 32],
+  iconAnchor: [20, 20],
   popupAnchor: [0, -16],
 });
 
@@ -89,20 +86,105 @@ function getDistance(a: [number, number], b: [number, number]): number {
   const c = 2 * Math.atan2(Math.sqrt(aVal), Math.sqrt(1 - aVal));
   return R * c;
 }
-
-// Función para calcular progreso
+// Función para calcular progreso ajustado según isRouting
 function getProgress(
   vehicle: [number, number],
   start: [number, number],
   end: [number, number],
-  routeDistance: number
-): number {
+  routeDistance: number,
+  isRouting: boolean
+): number | string {  // Cambié el tipo a string o number
+  if (!isRouting) {
+    return 'En trayecto a la planta';  // Si no estamos en routing, no calculamos el progreso y mostramos este mensaje
+  }
+
   if (routeDistance <= 0) return 0;
-  
-  const vehicleToEnd = getDistance(vehicle, end);
-  const coveredDistance = routeDistance - vehicleToEnd;
-  const percent = (coveredDistance / routeDistance) * 100;
+
+  // Determinar el punto objetivo según isRouting
+  const target = isRouting ? end : start;
+  const referencePoint = isRouting ? start : end;
+
+  const distanceToTarget = getDistance(vehicle, target);
+  const totalDistance = getDistance(referencePoint, target);
+
+  const coveredDistance = totalDistance - distanceToTarget;
+  const percent = (coveredDistance / totalDistance) * 100;
+
   return Math.min(Math.max(percent, 0), 100);
+}
+
+// Componente para efectos del mapa
+function MapEffect({ start, end, vehicleLocation, isRouting, setInfo }: RoutingProps & { setInfo: (info: MapInfo) => void }) {
+  const map = useMap();
+  const [fullRoute, setFullRoute] = useState<RouteInfo>({ geometry: [], distance: 0, duration: 0 });
+  const [currentRoute, setCurrentRoute] = useState<RouteInfo>({ geometry: [], distance: 0, duration: 0 });
+
+  useEffect(() => {
+    const updateRoutes = async () => {
+      try {
+        // Calcular ruta completa (start -> end)
+        const full = await calculateRoute(start, end);
+        setFullRoute(full);
+
+        // Calcular ruta actual (vehicle -> target)
+        const target = isRouting ? end : start;
+        const current = await calculateRoute(vehicleLocation, target);
+        setCurrentRoute(current);
+
+        // Calcular progreso según isRouting
+        const progress = getProgress(vehicleLocation, start, end, full.distance, isRouting);
+
+        setInfo({
+          totalDistanceKm: (full.distance / 1000).toFixed(2),
+          vehicleToTargetKm: (current.distance / 1000).toFixed(2),
+          progressPercent: typeof progress === 'string' ? progress : progress.toFixed(2), // Aquí verificamos si es el string o el porcentaje
+          estimatedTime: formatDuration(current.duration),
+          totalEstimatedTime: formatDuration(full.duration),
+        });
+
+        // Ajustar vista del mapa
+        const allPoints = [
+          start,
+          end,
+          vehicleLocation,
+          ...full.geometry,
+          ...current.geometry
+        ];
+
+        if (allPoints.length > 0) {
+          const bounds = L.latLngBounds(allPoints);
+          map.fitBounds(bounds, { padding: [50, 50] });
+        }
+      } catch (error) {
+        console.error('Error al actualizar rutas:', error);
+      }
+    };
+
+    updateRoutes();
+    const interval = setInterval(updateRoutes, 60000);
+    return () => clearInterval(interval);
+  }, [start, end, vehicleLocation, isRouting, map, setInfo]);
+
+  return (
+    <>
+      {fullRoute.geometry.length > 0 && (
+        <Polyline
+          positions={fullRoute.geometry}
+          color="green"
+          weight={4}
+        />
+      )}
+
+      {currentRoute.geometry.length > 0 && (
+        <Polyline
+          positions={currentRoute.geometry}
+          color={isRouting ? "red" : "blue"}
+          weight={4}
+          dashArray="5, 10"
+        />
+      )}
+    </>
+  );
 }
 
 // Función para formatear duración
@@ -130,7 +212,6 @@ async function calculateRoute(from: [number, number], to: [number, number]): Pro
     }
 
     const route = data.routes[0];
-    // Decodificar la polilínea y asegurar el tipo [number, number]
     const decoded = polyline.decode(route.geometry);
     const geometry: [number, number][] = decoded.map((point) => [point[0], point[1]]);
 
@@ -145,79 +226,7 @@ async function calculateRoute(from: [number, number], to: [number, number]): Pro
   }
 }
 
-// Componente para efectos del mapa
-function MapEffect({ start, end, vehicleLocation, isRouting, setInfo }: RoutingProps & { setInfo: (info: MapInfo) => void }) {
-  const map = useMap();
-  const [fullRoute, setFullRoute] = useState<RouteInfo>({ geometry: [], distance: 0, duration: 0 });
-  const [currentRoute, setCurrentRoute] = useState<RouteInfo>({ geometry: [], distance: 0, duration: 0 });
 
-  useEffect(() => {
-    const updateRoutes = async () => {
-      try {
-        // Calcular ruta completa (start -> end)
-        const full = await calculateRoute(start, end);
-        setFullRoute(full);
-        
-        // Calcular ruta actual (vehicle -> target)
-        const target = isRouting ? end : start;
-        const current = await calculateRoute(vehicleLocation, target);
-        setCurrentRoute(current);
-
-        // Actualizar información
-        const progress = getProgress(vehicleLocation, start, end, full.distance);
-        
-        setInfo({
-          totalDistanceKm: (full.distance / 1000).toFixed(2),
-          vehicleToTargetKm: (current.distance / 1000).toFixed(2),
-          progressPercent: progress.toFixed(2),
-          estimatedTime: formatDuration(current.duration),
-          totalEstimatedTime: formatDuration(full.duration),
-        });
-
-        // Ajustar vista del mapa
-        const allPoints = [
-          start,
-          end,
-          vehicleLocation,
-          ...full.geometry,
-          ...current.geometry
-        ];
-        
-        if (allPoints.length > 0) {
-          const bounds = L.latLngBounds(allPoints);
-          map.fitBounds(bounds, { padding: [50, 50] });
-        }
-      } catch (error) {
-        console.error('Error al actualizar rutas:', error);
-      }
-    };
-
-    updateRoutes();
-    const interval = setInterval(updateRoutes, 60000);
-    return () => clearInterval(interval);
-  }, [start, end, vehicleLocation, isRouting, map, setInfo]);
-
-  return (
-    <>
-      {fullRoute.geometry.length > 0 && (
-        <Polyline 
-          positions={fullRoute.geometry} 
-          color="green"
-          weight={4}
-        />
-      )}
-      
-      {currentRoute.geometry.length > 0 && (
-        <Polyline 
-          positions={currentRoute.geometry} 
-          color={isRouting ? "red" : "blue"}
-          weight={4}
-          dashArray="5, 10"
-        />
-      )}
-    </>
-  );
-}
 
 // Componente principal
 export default function RoutingMap(props: RoutingProps) {
@@ -239,7 +248,7 @@ export default function RoutingMap(props: RoutingProps) {
         worldCopyJump={true}
       >
         <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          attribution='&copy; OpenStreetMap contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
         <Marker position={props.start} icon={greenIcon}>
@@ -263,7 +272,7 @@ export default function RoutingMap(props: RoutingProps) {
           <strong>{info.vehicleToTargetKm} km</strong>
         </p>
         <p>
-          📍 Progreso: <strong>{info.progressPercent}%</strong>
+          📍 Progreso: <strong>{info.progressPercent}</strong>
         </p>
         <p>
           ⏱️ Tiempo estimado: <strong>{info.estimatedTime}</strong>
