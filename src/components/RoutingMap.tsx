@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import polyline from 'polyline';
 import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from 'react-leaflet';
-import type { Osrm } from '../model/osrm';
 import L from 'leaflet';
 import axios from 'axios';
 
+// Interfaces de tipos
 interface RoutingProps {
   start: [number, number];
   end: [number, number];
@@ -14,9 +14,43 @@ interface RoutingProps {
   isRouting: boolean;
 }
 
+interface RouteInfo {
+  geometry: [number, number][];
+  distance: number;
+  duration: number;
+}
+
+interface MapInfo {
+  totalDistanceKm: string;
+  vehicleToTargetKm: string;
+  progressPercent: string;
+  estimatedTime: string;
+  totalEstimatedTime: string;
+}
+
+interface OsrmRoute {
+  geometry: string;
+  legs: {
+    steps: {
+      geometry: string;
+    }[];
+  }[];
+  distance: number;
+  duration: number;
+}
+
+interface OsrmResponse {
+  routes: OsrmRoute[];
+  waypoints: any[];
+  code: string;
+}
+
+// Configuración de constantes
+const OSRM_SERVER = 'https://dev.enrutat.com/map/route/v1/driving';
+
+// Íconos
 const greenIcon = new L.Icon({
-  iconUrl:
-    'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
+  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
   iconSize: [25, 41],
   iconAnchor: [12, 41],
@@ -25,8 +59,7 @@ const greenIcon = new L.Icon({
 });
 
 const redIcon = new L.Icon({
-  iconUrl:
-    'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
   iconSize: [25, 41],
   iconAnchor: [12, 41],
@@ -34,66 +67,17 @@ const redIcon = new L.Icon({
   shadowSize: [41, 41],
 });
 
-function VehicleMarker({ position }: { position: [number, number] }) {
-  return (
-    <Marker
-      position={position}
-      icon={L.divIcon({
-        html: '🚗',
-        className: '',
-        iconSize: [30, 30],
-        iconAnchor: [15, 15],
-      })}
-    />
-  );
-}
+const carIcon = new L.Icon({
+  iconUrl: 'https://cdn-icons-png.flaticon.com/512/744/744515.png',
+  iconSize: [32, 32],
+  iconAnchor: [16, 16],
+  popupAnchor: [0, -16],
+});
 
-const OSRM_SERVER = 'https://dev.enrutat.com/map/route/v1/driving';
-
-async function calculateRoute(from: [number, number], to: [number, number]) {
-  try {
-    const fromReversed = [from[1], from[0]];
-    const toReversed = [to[1], to[0]];
-
-    const url = `${OSRM_SERVER}/${fromReversed.join(',')};${toReversed.join(',')}?overview=false&alternatives=true&steps=true&hints=;`;
-    console.log('Consultando OSRM:', url);
-
-    const res = await axios.get<Osrm>(url);
-    const data = res.data;
-
-    if (!data.routes || data.routes.length === 0) {
-      console.warn('OSRM no devolvió ninguna ruta válida');
-      return { distance: 0, duration: 0, geometry: [] as [number, number][] };
-    }
-
-    const route = data.routes[0];
-    const geometry: [number, number][] = [];
-
-    for (const leg of route.legs) {
-      for (const step of leg.steps) {
-        if (step.geometry) {
-          const decoded = polyline.decode(step.geometry);
-          geometry.push(
-            ...decoded.map(([lat, lng]): [number, number] => [lng, lat])
-          );
-        }
-      }
-    }
-
-    return {
-      distance: route.distance,
-      duration: route.duration,
-      geometry,
-    };
-  } catch (error) {
-    console.error('Error al calcular la ruta:', error);
-    return { distance: 0, duration: 0, geometry: [] as [number, number][] };
-  }
-}
-
+// Función para calcular distancia entre puntos
 function getDistance(a: [number, number], b: [number, number]): number {
   const toRad = (n: number) => (n * Math.PI) / 180;
-  const R = 6371e3;
+  const R = 6371e3; // Radio de la Tierra en metros
   const dLat = toRad(b[0] - a[0]);
   const dLon = toRad(b[1] - a[1]);
   const lat1 = toRad(a[0]);
@@ -106,19 +90,23 @@ function getDistance(a: [number, number], b: [number, number]): number {
   return R * c;
 }
 
+// Función para calcular progreso
 function getProgress(
   vehicle: [number, number],
   start: [number, number],
   end: [number, number],
   routeDistance: number
 ): number {
+  if (routeDistance <= 0) return 0;
+  
   const vehicleToEnd = getDistance(vehicle, end);
   const coveredDistance = routeDistance - vehicleToEnd;
   const percent = (coveredDistance / routeDistance) * 100;
   return Math.min(Math.max(percent, 0), 100);
 }
 
-function formatDuration(seconds: number) {
+// Función para formatear duración
+function formatDuration(seconds: number): string {
   if (seconds <= 0 || isNaN(seconds)) return '0h 0m';
   const mins = Math.floor(seconds / 60);
   const hours = Math.floor(mins / 60);
@@ -126,57 +114,114 @@ function formatDuration(seconds: number) {
   return `${hours}h ${remainingMins}m`;
 }
 
-function MapEffect({ start, end, vehicleLocation, isRouting, setInfo }: RoutingProps & { setInfo: Function }) {
-  const map = useMap();
-  const drawnLayersRef = useRef<L.Layer[]>([]);
+// Función para calcular rutas
+async function calculateRoute(from: [number, number], to: [number, number]): Promise<RouteInfo> {
+  try {
+    const fromStr = `${from[1]},${from[0]}`;
+    const toStr = `${to[1]},${to[0]}`;
 
-  useEffect(() => {
-    const draw = async () => {
-      drawnLayersRef.current.forEach((layer) => map.removeLayer(layer));
-      drawnLayersRef.current = [];
+    const url = `${OSRM_SERVER}/${fromStr};${toStr}?overview=full&geometries=polyline`;
+    const res = await axios.get<OsrmResponse>(url);
+    const data = res.data;
 
-      const fullRoute = await calculateRoute(start, end);
-      const routeToEvaluate = await calculateRoute(vehicleLocation, isRouting ? end : start);
+    if (!data.routes || data.routes.length === 0) {
+      console.warn('OSRM no devolvió ninguna ruta válida');
+      return { distance: 0, duration: 0, geometry: [] };
+    }
 
-      console.log('Ruta completa:', fullRoute);
-      console.log('Ruta vehículo:', routeToEvaluate);
+    const route = data.routes[0];
+    // Decodificar la polilínea y asegurar el tipo [number, number]
+    const decoded = polyline.decode(route.geometry);
+    const geometry: [number, number][] = decoded.map((point) => [point[0], point[1]]);
 
-      if (fullRoute.geometry.length > 0) {
-        const fullPolyline = L.polyline(fullRoute.geometry, { color: 'green' }).addTo(map);
-        drawnLayersRef.current.push(fullPolyline);
-      }
-
-      if (routeToEvaluate.geometry.length > 0) {
-        const dynamicPolyline = L.polyline(routeToEvaluate.geometry, {
-          color: isRouting ? 'red' : 'blue',
-          dashArray: '5,10',
-        }).addTo(map);
-        drawnLayersRef.current.push(dynamicPolyline);
-      }
-
-      const progress = getProgress(vehicleLocation, start, end, fullRoute.distance);
-
-      setInfo({
-        totalDistanceKm: (fullRoute.distance / 1000).toFixed(2),
-        vehicleToTargetKm: (routeToEvaluate.distance / 1000).toFixed(2),
-        progressPercent: progress.toFixed(2),
-        estimatedTime: formatDuration(routeToEvaluate.duration),
-        totalEstimatedTime: formatDuration(fullRoute.duration),
-      });
-
-      map.setView(vehicleLocation, 10);
+    return {
+      distance: route.distance,
+      duration: route.duration,
+      geometry,
     };
-
-    draw();
-    const interval = setInterval(draw, 60000);
-    return () => clearInterval(interval);
-  }, [start, end, vehicleLocation, isRouting]);
-
-  return null;
+  } catch (error) {
+    console.error('Error al calcular la ruta:', error);
+    return { distance: 0, duration: 0, geometry: [] };
+  }
 }
 
+// Componente para efectos del mapa
+function MapEffect({ start, end, vehicleLocation, isRouting, setInfo }: RoutingProps & { setInfo: (info: MapInfo) => void }) {
+  const map = useMap();
+  const [fullRoute, setFullRoute] = useState<RouteInfo>({ geometry: [], distance: 0, duration: 0 });
+  const [currentRoute, setCurrentRoute] = useState<RouteInfo>({ geometry: [], distance: 0, duration: 0 });
+
+  useEffect(() => {
+    const updateRoutes = async () => {
+      try {
+        // Calcular ruta completa (start -> end)
+        const full = await calculateRoute(start, end);
+        setFullRoute(full);
+        
+        // Calcular ruta actual (vehicle -> target)
+        const target = isRouting ? end : start;
+        const current = await calculateRoute(vehicleLocation, target);
+        setCurrentRoute(current);
+
+        // Actualizar información
+        const progress = getProgress(vehicleLocation, start, end, full.distance);
+        
+        setInfo({
+          totalDistanceKm: (full.distance / 1000).toFixed(2),
+          vehicleToTargetKm: (current.distance / 1000).toFixed(2),
+          progressPercent: progress.toFixed(2),
+          estimatedTime: formatDuration(current.duration),
+          totalEstimatedTime: formatDuration(full.duration),
+        });
+
+        // Ajustar vista del mapa
+        const allPoints = [
+          start,
+          end,
+          vehicleLocation,
+          ...full.geometry,
+          ...current.geometry
+        ];
+        
+        if (allPoints.length > 0) {
+          const bounds = L.latLngBounds(allPoints);
+          map.fitBounds(bounds, { padding: [50, 50] });
+        }
+      } catch (error) {
+        console.error('Error al actualizar rutas:', error);
+      }
+    };
+
+    updateRoutes();
+    const interval = setInterval(updateRoutes, 60000);
+    return () => clearInterval(interval);
+  }, [start, end, vehicleLocation, isRouting, map, setInfo]);
+
+  return (
+    <>
+      {fullRoute.geometry.length > 0 && (
+        <Polyline 
+          positions={fullRoute.geometry} 
+          color="green"
+          weight={4}
+        />
+      )}
+      
+      {currentRoute.geometry.length > 0 && (
+        <Polyline 
+          positions={currentRoute.geometry} 
+          color={isRouting ? "red" : "blue"}
+          weight={4}
+          dashArray="5, 10"
+        />
+      )}
+    </>
+  );
+}
+
+// Componente principal
 export default function RoutingMap(props: RoutingProps) {
-  const [info, setInfo] = useState({
+  const [info, setInfo] = useState<MapInfo>({
     totalDistanceKm: '0',
     vehicleToTargetKm: '0',
     progressPercent: '0',
@@ -188,47 +233,48 @@ export default function RoutingMap(props: RoutingProps) {
     <div className="w-full flex flex-col items-center gap-4">
       <MapContainer
         center={props.vehicleLocation}
-        zoom={10}
+        zoom={13}
         scrollWheelZoom={true}
         style={{ height: '500px', width: '100%' }}
+        worldCopyJump={true}
       >
         <TileLayer
-          attribution="OpenStreetMap"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
         <Marker position={props.start} icon={greenIcon}>
-          <Popup>Inicio</Popup>
+          <Popup>Punto de inicio</Popup>
         </Marker>
         <Marker position={props.end} icon={redIcon}>
-          <Popup>Destino</Popup>
+          <Popup>Punto de destino</Popup>
         </Marker>
-        <VehicleMarker position={props.vehicleLocation} />
+        <Marker position={props.vehicleLocation} icon={carIcon}>
+          <Popup>Posición actual del vehículo</Popup>
+        </Marker>
         <MapEffect {...props} setInfo={setInfo} />
       </MapContainer>
 
       <div className="bg-white p-4 rounded shadow w-full max-w-xl text-center text-sm">
         <p>
-          🟩 Ruta origen → destino: <strong>{info.totalDistanceKm} km</strong>
+          🟩 Ruta completa: <strong>{info.totalDistanceKm} km</strong>
         </p>
         <p>
-          {props.isRouting ? '🔴 Vehículo → destino:' : '🔵 Vehículo → origen:'}{' '}
+          {props.isRouting ? '🔴 Distancia al destino:' : '🔵 Distancia al origen:'}{' '}
           <strong>{info.vehicleToTargetKm} km</strong>
         </p>
         <p>
-          📍 Progreso de ruta: <strong>{info.progressPercent}%</strong>
+          📍 Progreso: <strong>{info.progressPercent}%</strong>
         </p>
         <p>
-          ⏱️ Tiempo estimado (vehículo → destino/origen):{' '}
-          <strong>{info.estimatedTime}</strong>
+          ⏱️ Tiempo estimado: <strong>{info.estimatedTime}</strong>
         </p>
         <p>
-          ⏲️ Tiempo total estimado (inicio → destino):{' '}
-          <strong>{info.totalEstimatedTime}</strong>
+          ⏲️ Tiempo total: <strong>{info.totalEstimatedTime}</strong>
         </p>
 
         {info.totalDistanceKm === '0' && (
           <p className="text-red-600 font-semibold">
-            ⚠️ No se pudo calcular la ruta. Verifica los puntos.
+            ⚠️ No se pudo calcular la ruta. Verifica las coordenadas.
           </p>
         )}
       </div>

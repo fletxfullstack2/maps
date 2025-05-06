@@ -28,7 +28,7 @@ export default function Home() {
         start={[4.711296, -74.072017]} 
         end={[10.96403, -74.796524]} 
         vehicleLocation={[4.651721, -74.078671]} 
-        isRouting={true}
+        isRouting={false}
       />
     </div>
   );
